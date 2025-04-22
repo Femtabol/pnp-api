@@ -2,6 +2,7 @@ const express = require('express');
 const authenticateToken = require('../middleware/auth');
 const pool = require('../config/database');
 const tokenPlans = require('../utils/tokenPlans');
+const { WEBHOOK_EVENTS, sendWebhook } = require('../utils/webhooks');
 
 const router = express.Router();
 
@@ -24,10 +25,25 @@ router.post('/update-subscription', authenticateToken, async (req, res) => {
   try {
     conn = await pool.getConnection();
 
+    const [userBefore] = await conn.query(
+      'SELECT subscription FROM users WHERE id = ?',
+      [req.user.id]
+    );
+
     await conn.query(
       `UPDATE users SET subscription = ?, tokens_per_day = ?, tokens_remaining = ? WHERE id = ?`,
       [planId, tokensPerDay, tokensPerDay, req.user.id]
     );
+
+    // Trigger webhook for subscription update
+    sendWebhook(WEBHOOK_EVENTS.SUBSCRIPTION_UPDATED, {
+      userId: req.user.id,
+      email: req.user.email,
+      name: req.user.name,
+      oldSubscription: userBefore.subscription,
+      newSubscription: planId,
+      tokensPerDay
+    });
 
     res.json({
       message: 'Subscription updated',

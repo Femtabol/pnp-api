@@ -2,6 +2,7 @@ const express = require('express');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const pool = require('../config/database');
+const { WEBHOOK_EVENTS, sendWebhook } = require('../utils/webhooks');
 
 const router = express.Router();
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key';
@@ -22,8 +23,18 @@ router.post('/register', async (req, res) => {
       'INSERT INTO users (name, email, password, subscription, tokens_per_day, tokens_remaining) VALUES (?, ?, ?, ?, ?, ?)',
       [name, email, hashedPassword, 'free', 10, 10]
     );
-
-    const token = jwt.sign({ id: result.insertId }, JWT_SECRET, { expiresIn: '7d' });
+    
+    const userId = result.insertId;
+    const token = jwt.sign({ id: userId }, JWT_SECRET, { expiresIn: '7d' });
+    
+    // Trigger webhook for user registration
+    sendWebhook(WEBHOOK_EVENTS.USER_REGISTERED, {
+      userId,
+      name,
+      email,
+      subscription: 'free'
+    });
+    
     res.status(201).json({ message: 'Registration successful', token });
   } catch (err) {
     console.error('Registration error:', err);
@@ -48,6 +59,15 @@ router.post('/login', async (req, res) => {
     if (!match) return res.status(401).json({ message: 'Invalid credentials' });
 
     const token = jwt.sign({ id: user.id }, JWT_SECRET, { expiresIn: '7d' });
+    
+    // Trigger webhook for user login
+    sendWebhook(WEBHOOK_EVENTS.USER_LOGIN, {
+      userId: user.id,
+      email: user.email,
+      name: user.name,
+      subscription: user.subscription
+    });
+    
     res.json({ message: 'Login successful', token });
   } catch (err) {
     console.error('Login error:', err);

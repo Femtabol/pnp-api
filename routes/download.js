@@ -1,6 +1,7 @@
 const express = require('express');
 const authenticateToken = require('../middleware/auth');
 const pool = require('../config/database');
+const { WEBHOOK_EVENTS, sendWebhook } = require('../utils/webhooks');
 
 const router = express.Router();
 
@@ -70,12 +71,24 @@ router.post('/downloads/use-token', authenticateToken, async (req, res) => {
     );
 
     // Log the download
-    await conn.query(
+    const downloadResult = await conn.query(
       'INSERT INTO downloads (user_id, file_id) VALUES (?, ?)',
       [req.user.id, fileId]
     );
 
     await conn.commit();
+
+    // Trigger webhook for token usage
+    sendWebhook(WEBHOOK_EVENTS.TOKEN_USED, {
+      userId: req.user.id,
+      email: req.user.email,
+      name: req.user.name,
+      fileId: fileId,
+      fileName: fileRow.title,
+      downloadId: downloadResult.insertId,
+      tokensRemaining: userRow.tokens_remaining - 1,
+      tokensPerDay: userRow.tokens_per_day
+    });
 
     res.json({
       message: 'Token used successfully',
