@@ -1,2 +1,2 @@
 # pnp-api
-JS API 
+PNP API FOR MANIFEST MEMES
