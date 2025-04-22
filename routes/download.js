@@ -12,9 +12,18 @@ router.get('/files', authenticateToken, async (req, res) => {
     conn = await pool.getConnection();
 
     // Select only safe public fields (title, created_at, file_url)
-    const files = await conn.query(
+    const filesResult = await conn.query(
       'SELECT id, title, created_at, file_url FROM files'
     );
+
+    // Convert any BigInt values to Numbers
+    const files = filesResult.map(file => {
+      const processed = {};
+      for (const [key, value] of Object.entries(file)) {
+        processed[key] = typeof value === 'bigint' ? Number(value) : value;
+      }
+      return processed;
+    });
 
     res.json(files);
   } catch (err) {
@@ -78,14 +87,20 @@ router.post('/downloads/use-token', authenticateToken, async (req, res) => {
 
     await conn.commit();
 
+    // Convert IDs to Numbers if needed
+    const userId = typeof req.user.id === 'bigint' ? Number(req.user.id) : req.user.id;
+    const fileIdNum = typeof fileId === 'bigint' ? Number(fileId) : fileId;
+    const downloadId = typeof downloadResult.insertId === 'bigint' ? 
+      Number(downloadResult.insertId) : downloadResult.insertId;
+
     // Trigger webhook for token usage
     sendWebhook(WEBHOOK_EVENTS.TOKEN_USED, {
-      userId: req.user.id,
+      userId: userId,
       email: req.user.email,
       name: req.user.name,
-      fileId: fileId,
+      fileId: fileIdNum,
       fileName: fileRow.title,
-      downloadId: downloadResult.insertId,
+      downloadId: downloadId,
       tokensRemaining: userRow.tokens_remaining - 1,
       tokensPerDay: userRow.tokens_per_day
     });

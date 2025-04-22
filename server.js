@@ -19,6 +19,7 @@ app.use('/api/users', require('./routes/user'));
 app.use('/api', require('./routes/download'));
 app.use('/api/admin', require('./routes/admin'));
 app.use('/api/webhooks', require('./routes/webhooks'));
+app.use('/api/webhook-test', require('./routes/webhook-test'));
 
 // Daily token refresh
 const pool = require('./config/database');

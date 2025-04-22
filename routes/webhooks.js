@@ -3,22 +3,38 @@ const crypto = require('crypto');
 const authenticateToken = require('../middleware/auth');
 const isAdmin = require('../middleware/admin');
 const pool = require('../config/database');
-const { WEBHOOK_EVENTS } = require('../utils/webhooks');
 
 const router = express.Router();
+
+// Define webhook events directly in this file to avoid import issues
+const WEBHOOK_EVENTS = {
+  USER_REGISTERED: 'user.registered',
+  USER_LOGIN: 'user.login',
+  TOKEN_USED: 'token.used',
+  SUBSCRIPTION_UPDATED: 'subscription.updated'
+};
 
 // Get all webhooks (admin only)
 router.get('/', authenticateToken, isAdmin, async (req, res) => {
   let conn;
   try {
     conn = await pool.getConnection();
-    const webhooks = await conn.query(
+    const webhooksResult = await conn.query(
       `SELECT w.id, w.name, w.url, w.event_type, 
       w.created_at, w.active, u.name as created_by_name
       FROM webhooks w
       JOIN users u ON w.created_by = u.id
       ORDER BY w.created_at DESC`
     );
+    
+    // Manually convert any BigInt values to Numbers
+    const webhooks = webhooksResult.map(hook => {
+      const processed = {};
+      for (const [key, value] of Object.entries(hook)) {
+        processed[key] = typeof value === 'bigint' ? Number(value) : value;
+      }
+      return processed;
+    });
     
     res.json(webhooks);
   } catch (err) {
@@ -38,7 +54,7 @@ router.get('/:id', authenticateToken, isAdmin, async (req, res) => {
     conn = await pool.getConnection();
     
     // Get webhook details
-    const [webhook] = await conn.query(
+    const [webhookResult] = await conn.query(
       `SELECT w.id, w.name, w.url, w.event_type, 
       w.created_at, w.active, u.name as created_by_name
       FROM webhooks w
@@ -47,12 +63,12 @@ router.get('/:id', authenticateToken, isAdmin, async (req, res) => {
       [id]
     );
     
-    if (!webhook) {
+    if (!webhookResult) {
       return res.status(404).json({ message: 'Webhook not found' });
     }
     
     // Get recent logs for this webhook
-    const logs = await conn.query(
+    const logsResult = await conn.query(
       `SELECT id, event_type, status, response_code, 
       error_message, created_at
       FROM webhook_logs
@@ -61,6 +77,21 @@ router.get('/:id', authenticateToken, isAdmin, async (req, res) => {
       LIMIT 100`,
       [id]
     );
+    
+    // Process the webhook object
+    const webhook = {};
+    for (const [key, value] of Object.entries(webhookResult)) {
+      webhook[key] = typeof value === 'bigint' ? Number(value) : value;
+    }
+    
+    // Process the logs array
+    const logs = logsResult.map(log => {
+      const processedLog = {};
+      for (const [key, value] of Object.entries(log)) {
+        processedLog[key] = typeof value === 'bigint' ? Number(value) : value;
+      }
+      return processedLog;
+    });
     
     res.json({
       ...webhook,
@@ -107,8 +138,13 @@ router.post('/', authenticateToken, isAdmin, async (req, res) => {
       [name, url, event_type, secretKey, req.user.id, active !== false]
     );
     
+    // Explicitly convert the insertId to a Number if it's a BigInt
+    const insertId = typeof result.insertId === 'bigint' 
+      ? Number(result.insertId) 
+      : result.insertId;
+    
     res.status(201).json({
-      id: result.insertId,
+      id: insertId,
       name,
       url,
       event_type,
