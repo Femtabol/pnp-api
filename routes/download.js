@@ -11,9 +11,9 @@ router.get('/files', authenticateToken, async (req, res) => {
   try {
     conn = await pool.getConnection();
 
-    // Select only safe public fields (title, created_at, file_url)
+    // Updated to include has_drm and drm_name fields
     const filesResult = await conn.query(
-      'SELECT id, title, created_at, file_url FROM files'
+      'SELECT id, title, created_at, file_url, has_drm, drm_name FROM files'
     );
 
     // Convert any BigInt values to Numbers
@@ -60,9 +60,9 @@ router.post('/downloads/use-token', authenticateToken, async (req, res) => {
       return res.status(403).json({ message: 'No tokens remaining for today' });
     }
 
-    // Check if the file exists
+    // Check if the file exists - now including DRM fields
     const [fileRow] = await conn.query(
-      'SELECT id, title, file_url FROM files WHERE id = ?',
+      'SELECT id, title, file_url, has_drm, drm_name FROM files WHERE id = ?',
       [fileId]
     );
 
@@ -102,7 +102,9 @@ router.post('/downloads/use-token', authenticateToken, async (req, res) => {
       fileName: fileRow.title,
       downloadId: downloadId,
       tokensRemaining: userRow.tokens_remaining - 1,
-      tokensPerDay: userRow.tokens_per_day
+      tokensPerDay: userRow.tokens_per_day,
+      hasDrm: fileRow.has_drm,
+      drmName: fileRow.drm_name
     });
 
     res.json({
@@ -110,7 +112,9 @@ router.post('/downloads/use-token', authenticateToken, async (req, res) => {
       downloadUrl: `/api/download/${fileId}`,
       fileName: fileRow.title,
       tokensRemaining: userRow.tokens_remaining - 1,
-      fileUrl: fileRow.file_url  // Including file URL in the response
+      fileUrl: fileRow.file_url,
+      hasDrm: fileRow.has_drm,
+      drmName: fileRow.drm_name
     });
 
   } catch (err) {
