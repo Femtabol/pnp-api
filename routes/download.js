@@ -2,6 +2,10 @@ const express = require('express');
 const authenticateToken = require('../middleware/auth');
 const pool = require('../config/database');
 const { WEBHOOK_EVENTS, sendWebhook } = require('../utils/webhooks');
+const crypto = require('crypto');
+const path = require('path');
+const fs = require('fs');
+const axios = require('axios'); // Add axios for external file fetching
 
 const router = express.Router();
 
@@ -34,6 +38,56 @@ router.get('/files', authenticateToken, async (req, res) => {
   }
 });
 
+// Validate the Download Key Before Serving the File
+router.get('/downloads/:downloadKey', async (req, res) => {
+  const { downloadKey } = req.params;
+
+  let conn;
+  try {
+    conn = await pool.getConnection();
+
+    // Validate the download key
+    const [keyRow] = await conn.query(
+      'SELECT dk.file_id, f.file_url, dk.used, dk.expires_at FROM download_keys dk JOIN files f ON dk.file_id = f.id WHERE dk.download_key = ?',
+      [downloadKey]
+    );
+
+    if (!keyRow) {
+      return res.status(404).json({ message: 'Invalid or expired download key' });
+    }
+
+    if (keyRow.used) {
+      return res.status(403).json({ message: 'This download key has already been used' });
+    }
+
+    if (new Date(keyRow.expires_at) < new Date()) {
+      return res.status(403).json({ message: 'This download key has expired' });
+    }
+
+    // Mark the key as used
+    await conn.query('UPDATE download_keys SET used = TRUE WHERE download_key = ?', [downloadKey]);
+
+    // Fetch the file from the external URL
+    const fileUrl = keyRow.file_url; // URL stored in the database
+    const fileName = path.basename(fileUrl); // Extract the file name from the URL
+
+    const response = await axios({
+      url: fileUrl,
+      method: 'GET',
+      responseType: 'stream', // Stream the file content
+    });
+
+    // Set headers and pipe the file to the client
+    res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+    response.data.pipe(res);
+  } catch (err) {
+    console.error('Error validating download key or fetching file:', err);
+    res.status(500).json({ message: 'Internal server error' });
+  } finally {
+    if (conn) conn.release();
+  }
+});
+
 // Use token for a download
 router.post('/downloads/use-token', authenticateToken, async (req, res) => {
   const { fileId } = req.body;
@@ -46,23 +100,18 @@ router.post('/downloads/use-token', authenticateToken, async (req, res) => {
   try {
     conn = await pool.getConnection();
 
-    // Fetch latest user tokens from the database
+    // Fetch user tokens and file details
     const [userRow] = await conn.query(
       'SELECT tokens_remaining, tokens_per_day FROM users WHERE id = ?',
       [req.user.id]
     );
 
-    if (!userRow) {
-      return res.status(404).json({ message: 'User not found' });
-    }
-
-    if (userRow.tokens_remaining <= 0) {
+    if (!userRow || userRow.tokens_remaining <= 0) {
       return res.status(403).json({ message: 'No tokens remaining for today' });
     }
 
-    // Check if the file exists - now including DRM fields
     const [fileRow] = await conn.query(
-      'SELECT id, title, file_url, has_drm, drm_name FROM files WHERE id = ?',
+      'SELECT id, title, file_url FROM files WHERE id = ?',
       [fileId]
     );
 
@@ -70,53 +119,32 @@ router.post('/downloads/use-token', authenticateToken, async (req, res) => {
       return res.status(404).json({ message: 'File not found' });
     }
 
-    // Begin transaction: deduct token + log download
+    // Begin transaction
     await conn.beginTransaction();
 
-    // Deduct token and increment tokens used
+    // Deduct token
     await conn.query(
       'UPDATE users SET tokens_remaining = tokens_remaining - 1, tokens_used = tokens_used + 1 WHERE id = ?',
       [req.user.id]
     );
 
-    // Log the download
-    const downloadResult = await conn.query(
-      'INSERT INTO downloads (user_id, file_id) VALUES (?, ?)',
-      [req.user.id, fileId]
+    // Generate a unique download key
+    const downloadKey = crypto.randomBytes(32).toString('hex');
+    const expiresAt = new Date(Date.now() + 15 * 60 * 1000); // Key expires in 15 minutes
+
+    await conn.query(
+      'INSERT INTO download_keys (user_id, file_id, download_key, expires_at) VALUES (?, ?, ?, ?)',
+      [req.user.id, fileId, downloadKey, expiresAt]
     );
 
     await conn.commit();
 
-    // Convert IDs to Numbers if needed
-    const userId = typeof req.user.id === 'bigint' ? Number(req.user.id) : req.user.id;
-    const fileIdNum = typeof fileId === 'bigint' ? Number(fileId) : fileId;
-    const downloadId = typeof downloadResult.insertId === 'bigint' ? 
-      Number(downloadResult.insertId) : downloadResult.insertId;
-
-    // Trigger webhook for token usage
-    sendWebhook(WEBHOOK_EVENTS.TOKEN_USED, {
-      userId: userId,
-      email: req.user.email,
-      name: req.user.name,
-      fileId: fileIdNum,
-      fileName: fileRow.title,
-      downloadId: downloadId,
-      tokensRemaining: userRow.tokens_remaining - 1,
-      tokensPerDay: userRow.tokens_per_day,
-      hasDrm: fileRow.has_drm,
-      drmName: fileRow.drm_name
-    });
-
     res.json({
       message: 'Token used successfully',
-      downloadUrl: `/api/download/${fileId}`,
-      fileName: fileRow.title,
-      tokensRemaining: userRow.tokens_remaining - 1,
-      fileUrl: fileRow.file_url,
-      hasDrm: fileRow.has_drm,
-      drmName: fileRow.drm_name
+      downloadKey,
+      expiresAt,
+      fileName: fileRow.title
     });
-
   } catch (err) {
     if (conn) await conn.rollback();
     console.error('Error during token usage:', err);
