@@ -19,7 +19,6 @@ app.use('/api/users', require('./routes/user'));
 app.use('/api', require('./routes/download'));
 app.use('/api/admin', require('./routes/admin'));
 app.use('/api/webhooks', require('./routes/webhooks'));
-app.use('/api/payments', require('./routes/payments')); // Add new payments route
 
 // Daily token refresh
 const pool = require('./config/database');
